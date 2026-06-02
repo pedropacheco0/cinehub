@@ -8,13 +8,17 @@ A principal funcionalidade que agrega valor ao usuário é o sistema de avaliaç
 Coleções do sistema
 
 filmes é a coleção principal. Cada documento representa um filme e concentra, de forma agregada, tudo que é necessário para exibir sua página completa sem precisar consultar outras coleções. É o agregado central do sistema.
+
 avaliações é uma coleção separada. Cada documento representa a avaliação de um usuário sobre um filme, referenciando o filme pelo campo filme_id.  A nota média já fica embutida em filmes para exibição rápida.
 
 pessoas é uma coleção separada. Cada documento representa um ator, diretor ou roteirista, com sua biografia e filmografia. Foi separada porque uma mesma pessoa aparece em muitos filmes, e embutir todos os seus dados em cada filme causaria duplicação massiva e dificultaria atualizações.
 
+
+
 Hierarquia e agregações dentro de filmes
 
 campos simples: título, ano, duração, sinopse, poster, classificação, gêneros, países e idiomas. São os dados básicos do filme, sempre exibidos na página.
+
 avaliacao { } é agregação :média, número de votos e metascore ficam embutidos dentro do filme porque são exibidos em toda consulta. Atualizam periodicamente mas são lidos com muito mais frequência do que escrito.
 
 elenco [ { } ] é agregação: array com os atores principais, contendo nome, personagem e ordem de crédito. Fica embutido porque a página do filme sempre exibe o elenco. Cada item guarda também um pessoa_id que referencia a coleção pessoas, permitindo navegar para o perfil do ator.
