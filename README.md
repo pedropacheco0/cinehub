@@ -6,6 +6,7 @@ A principal funcionalidade que agrega valor ao usuário é o sistema de avaliaç
 
 
 Coleções do sistema
+
 filmes é a coleção principal. Cada documento representa um filme e concentra, de forma agregada, tudo que é necessário para exibir sua página completa sem precisar consultar outras coleções. É o agregado central do sistema.
 avaliações é uma coleção separada. Cada documento representa a avaliação de um usuário sobre um filme, referenciando o filme pelo campo filme_id.  A nota média já fica embutida em filmes para exibição rápida.
 
