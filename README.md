@@ -5,7 +5,7 @@ O sistema tem como objetivo permitir que usuários consultem filmes previamente 
 A principal funcionalidade que agrega valor ao usuário é o sistema de avaliações e recomendações, no qual cada usuário pode registrar sua experiência com determinado filme, contribuindo para a formação de rankings e médias de avaliação. Dessa forma, a plataforma auxilia outros usuários na tomada de decisão sobre quais filmes assistir, utilizando informações coletivas e atualizadas em tempo real.
 
 
-Coleções do sistema
+*Coleções do sistema*
 
 filmes é a coleção principal. Cada documento representa um filme e concentra, de forma agregada, tudo que é necessário para exibir sua página completa sem precisar consultar outras coleções. É o agregado central do sistema.
 
@@ -15,7 +15,7 @@ pessoas é uma coleção separada. Cada documento representa um ator, diretor ou
 
 
 
-Hierarquia e agregações dentro de filmes
+*Hierarquia e agregações dentro de filmes*
 
 campos simples: título, ano, duração, sinopse, poster, classificação, gêneros, países e idiomas. São os dados básicos do filme, sempre exibidos na página.
 
@@ -30,7 +30,7 @@ premios [ { } ] é agregação: lista de prêmios e indicações do filme, com c
 
 
 
-Justificativa das decisões de modelagem
+*Justificativa das decisões de modelagem*
 
 Por que elenco, direção e prêmios são embutidos em filmes?
 Porque toda vez que um usuário abre a página de um filme, ele quer ver essas informações juntas. Embutir evita múltiplas consultas e entrega tudo de uma vez.
