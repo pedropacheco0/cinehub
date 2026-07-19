@@ -6,7 +6,7 @@ st.set_page_config(page_title="CineHub", page_icon="🎬", layout="wide")
 
 CONN_STRING = os.environ.get(
     "MONGODB_URI",
-    "mongodb+srv://admin_cinehub:SENHA@cinehub.3rawcki.mongodb.net/?appName=cinehub"
+    "mongodb+srv://usuario:senha@cinehub.3rawcki.mongodb.net/?appName=cinehub"
 )
 
 st.markdown("""
@@ -319,7 +319,7 @@ with st.sidebar:
     st.markdown('<div class="sb-label">Navegar</div>', unsafe_allow_html=True)
 
     pagina = st.radio(
-        "", ["Início", "Filmes", "Avaliações", "Pessoas", "CRUD"],
+        "", ["Início", "Filmes", "Avaliações", "Pessoas", "CRUD", "Pipelines", "Redis", "Neo4j"],
         label_visibility="collapsed",
         format_func=lambda x: {
             "Início": "⬡  Início",
@@ -327,6 +327,9 @@ with st.sidebar:
             "Avaliações": "◇  Avaliações",
             "Pessoas": "◉  Pessoas",
             "CRUD": "⚙  CRUD",
+            "Pipelines": "⟁  Pipelines",
+            "Redis": "⬢  Redis",
+            "Neo4j": "⬡  Neo4j",
         }[x]
     )
 
@@ -965,6 +968,815 @@ elif pagina == "CRUD":
                     col.delete_one({"_id": doc["_id"]})
                     st.success("✅ Documento excluído com sucesso!")
                     st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINES
+# ─────────────────────────────────────────────────────────────────────────────
+elif pagina == "Pipelines":
+    from datetime import datetime, timezone
+    import json
+
+    def dump_json(doc):
+        def conv(o):
+            if type(o).__name__ == 'ObjectId':
+                return str(o)
+            if isinstance(o, datetime):
+                return o.strftime('%Y-%m-%d %H:%M')
+            raise TypeError
+        return json.dumps(doc, default=conv, ensure_ascii=False, indent=2)
+
+    st.markdown('<div class="page-wrap">', unsafe_allow_html=True)
+    st.markdown("""
+    <h1 style="font-family:'Playfair Display',serif;font-style:italic;font-weight:900;font-size:2.8rem;letter-spacing:-1.5px;margin-bottom:0.5rem">Aggregation Pipelines</h1>
+    <p style="font-size:0.85rem;color:#a1a1aa;margin-bottom:2rem">Dois pipelines com operadores avançados do MongoDB · Executados em tempo real</p>
+    """, unsafe_allow_html=True)
+
+    tab_p1, tab_p2 = st.tabs(["📊 Pipeline 1 — Ranking de Filmes", "📰 Pipeline 2 — Feed de Avaliações"])
+
+    # ══════════════════════════════════════════════════════
+    # PIPELINE 1
+    # ══════════════════════════════════════════════════════
+    with tab_p1:
+        st.markdown("""
+        <div style="background:rgba(197,160,89,0.06);border:1px solid rgba(197,160,89,0.2);border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.5rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#c5a059;margin-bottom:0.5rem">Funcionalidade</div>
+          <p style="font-size:0.88rem;color:#a1a1aa;margin:0;line-height:1.7">Gera um <strong style="color:#fff">ranking dos filmes</strong> cruzando dados embutidos em <code>filmes</code> com as avaliações reais de <code>avaliacoes</code>. Recalcula a média real, compara com o cache e gera um score ponderado com o Metascore.</p>
+          <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.4rem">
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">$match</span>
+            <span class="genre-tag">$lookup</span>
+            <span class="genre-tag">$unwind</span>
+            <span class="genre-tag">$group</span>
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">$set</span>
+            <span class="genre-tag">$project</span>
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">$sort</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.expander("Ver código do pipeline", expanded=False):
+            st.code("""pipeline_1 = [
+    # $match — filtra filmes com ao menos 1 avaliação cadastrada
+    { "$match": { "avaliacao.total_votos": { "$gt": 0 } } },
+
+    # $lookup — JOIN com 'avaliacoes' pelo _id do filme
+    { "$lookup": {
+        "from": "avaliacoes",
+        "localField": "_id",
+        "foreignField": "filme_id",
+        "as": "avaliacoes_reais"
+    }},
+
+    # $unwind — desaninha o array (1 doc por avaliação)
+    { "$unwind": {
+        "path": "$avaliacoes_reais",
+        "preserveNullAndEmptyArrays": False
+    }},
+
+    # $group — recalcula média, min, max, curtidas por filme
+    { "$group": {
+        "_id": "$_id",
+        "titulo":          { "$first": "$titulo" },
+        "ano":             { "$first": "$ano" },
+        "diretor":         { "$first": "$direcao.nome" },
+        "generos":         { "$first": "$generos" },
+        "media_cache":     { "$first": "$avaliacao.media" },
+        "metascore":       { "$first": "$avaliacao.metascore" },
+        "media_real":      { "$avg": "$avaliacoes_reais.nota" },
+        "nota_minima":     { "$min": "$avaliacoes_reais.nota" },
+        "nota_maxima":     { "$max": "$avaliacoes_reais.nota" },
+        "total_avaliacoes":{ "$sum": 1 },
+        "total_curtidas":  { "$sum": "$avaliacoes_reais.curtidas" },
+        "usuarios":        { "$push": "$avaliacoes_reais.nome_usuario" },
+    }},
+
+    # $set — cria campos derivados: média arredondada, delta cache, score final
+    { "$set": {
+        "media_real": { "$round": ["$media_real", 2] },
+        "diferenca_cache": { "$round": [
+            { "$subtract": ["$media_real", "$media_cache"] }, 2
+        ]},
+        "score_comunidade": { "$round": [
+            { "$add": [
+                { "$multiply": ["$media_real", 0.7] },
+                { "$multiply": [{ "$divide": ["$metascore", 10] }, 0.3] }
+            ]}, 2
+        ]}
+    }},
+
+    # $project — seleciona e renomeia campos do resultado final
+    { "$project": {
+        "_id": 0,
+        "filme": "$titulo", "ano": 1, "diretor": 1, "generos": 1,
+        "media_cache": 1, "media_real": 1, "diferenca_cache": 1,
+        "nota_minima": 1, "nota_maxima": 1,
+        "total_avaliacoes": 1, "total_curtidas": 1,
+        "score_comunidade": 1, "usuarios": 1,
+    }},
+
+    # $sort — ordena por score_comunidade desc, desempate por curtidas
+    { "$sort": { "score_comunidade": -1, "total_curtidas": -1 } },
+]""", language="python")
+
+        if st.button("▶ Executar Pipeline 1", key="run_p1", use_container_width=True):
+            with st.spinner("Executando..."):
+                pipeline_1 = [
+                    {"$match": {"avaliacao.total_votos": {"$gt": 0}}},
+                    {"$lookup": {"from": "avaliacoes","localField": "_id","foreignField": "filme_id","as": "avaliacoes_reais"}},
+                    {"$unwind": {"path": "$avaliacoes_reais","preserveNullAndEmptyArrays": False}},
+                    {"$group": {
+                        "_id": "$_id","titulo": {"$first": "$titulo"},"ano": {"$first": "$ano"},
+                        "diretor": {"$first": "$direcao.nome"},"generos": {"$first": "$generos"},
+                        "media_cache": {"$first": "$avaliacao.media"},"metascore": {"$first": "$avaliacao.metascore"},
+                        "media_real": {"$avg": "$avaliacoes_reais.nota"},"nota_minima": {"$min": "$avaliacoes_reais.nota"},
+                        "nota_maxima": {"$max": "$avaliacoes_reais.nota"},"total_avaliacoes": {"$sum": 1},
+                        "total_curtidas": {"$sum": "$avaliacoes_reais.curtidas"},"usuarios": {"$push": "$avaliacoes_reais.nome_usuario"},
+                    }},
+                    {"$set": {
+                        "media_real": {"$round": ["$media_real", 2]},
+                        "diferenca_cache": {"$round": [{"$subtract": ["$media_real", "$media_cache"]}, 2]},
+                        "score_comunidade": {"$round": [{"$add": [{"$multiply": ["$media_real", 0.7]},{"$multiply": [{"$divide": ["$metascore", 10]}, 0.3]}]}, 2]},
+                    }},
+                    {"$project": {"_id": 0,"filme": "$titulo","ano": 1,"diretor": 1,"generos": 1,"media_cache": 1,"media_real": 1,"diferenca_cache": 1,"nota_minima": 1,"nota_maxima": 1,"total_avaliacoes": 1,"total_curtidas": 1,"score_comunidade": 1,"usuarios": 1}},
+                    {"$sort": {"score_comunidade": -1, "total_curtidas": -1}},
+                ]
+                resultados = list(db["filmes"].aggregate(pipeline_1))
+
+            st.success(f"✅ {len(resultados)} filme(s) no ranking")
+            for i, r in enumerate(resultados, 1):
+                delta_cor = "#4ade80" if r['diferenca_cache'] >= 0 else "#f87171"
+                delta_sinal = "+" if r['diferenca_cache'] >= 0 else ""
+                st.markdown(f"""
+                <div class="movie-card" style="margin-bottom:0.75rem">
+                  <div>
+                    <div class="movie-meta">#{i} · {r['ano']} · {r['diretor']}</div>
+                    <div class="movie-title">{r['filme']}</div>
+                    <div style="margin:0.5rem 0">{"".join(f'<span class="genre-tag">{g}</span>' for g in r['generos'])}</div>
+                    <div style="font-size:0.8rem;color:#a1a1aa;margin-top:0.5rem">
+                      Avaliadores: <span style="color:#fff">{', '.join(r['usuarios'])}</span>
+                    </div>
+                  </div>
+                  <div class="score-block">
+                    <div class="score-num">{r['score_comunidade']}</div>
+                    <div class="score-sub">score final</div>
+                    <div style="margin-top:0.6rem;font-size:0.75rem;color:#a1a1aa">Nota real: <span style="color:#fff">{r['media_real']}</span></div>
+                    <div style="font-size:0.75rem;color:#a1a1aa">Cache: <span style="color:#fff">{r['media_cache']}</span> <span style="color:{delta_cor}">({delta_sinal}{r['diferenca_cache']})</span></div>
+                    <div style="font-size:0.75rem;color:#a1a1aa">Min/Max: <span style="color:#fff">{r['nota_minima']}/{r['nota_maxima']}</span></div>
+                    <div style="font-size:0.75rem;color:#a1a1aa">Curtidas: <span style="color:#fff">{r['total_curtidas']}</span></div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with st.expander("Ver JSON completo dos resultados"):
+                st.code(dump_json(resultados), language="json")
+
+    # ══════════════════════════════════════════════════════
+    # PIPELINE 2
+    # ══════════════════════════════════════════════════════
+    with tab_p2:
+        st.markdown("""
+        <div style="background:rgba(197,160,89,0.06);border:1px solid rgba(197,160,89,0.2);border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.5rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#c5a059;margin-bottom:0.5rem">Funcionalidade</div>
+          <p style="font-size:0.88rem;color:#a1a1aa;margin:0;line-height:1.7">Gera um <strong style="color:#fff">feed variado de avaliações</strong> sem spoiler, enriquecido com dados do filme e do diretor. Classifica cada avaliação em categorias e persiste o resultado em <code>feed_snapshot</code> via <strong style="color:#c5a059">$merge</strong> para leitura rápida.</p>
+          <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.4rem">
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">$match</span>
+            <span class="genre-tag">$sort</span>
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">$sample</span>
+            <span class="genre-tag">$lookup</span>
+            <span class="genre-tag">$unwind</span>
+            <span class="genre-tag">$set</span>
+            <span class="genre-tag">$project</span>
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">$merge</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.expander("Ver código do pipeline", expanded=False):
+            st.code("""pipeline_2 = [
+    # $match — apenas avaliações sem spoiler e nota >= 5
+    { "$match": { "contem_spoiler": False, "nota": { "$gte": 5.0 } } },
+
+    # $sort — mais recentes primeiro (antes do $sample)
+    { "$sort": { "created_at": -1 } },
+
+    # $sample — sorteia aleatoriamente até 10 avaliações
+    { "$sample": { "size": 10 } },
+
+    # $lookup — JOIN com 'filmes' para enriquecer cada avaliação
+    { "$lookup": {
+        "from": "filmes",
+        "localField": "filme_id",
+        "foreignField": "_id",
+        "as": "filme_doc"
+    }},
+
+    # $unwind — transforma array filme_doc em objeto direto
+    { "$unwind": { "path": "$filme_doc", "preserveNullAndEmptyArrays": False } },
+
+    # $lookup — segundo JOIN: busca o diretor em 'pessoas'
+    { "$lookup": {
+        "from": "pessoas",
+        "localField": "filme_doc.direcao.pessoa_id",
+        "foreignField": "_id",
+        "as": "diretor_doc"
+    }},
+
+    # $unwind — desaninha diretor (preserva mesmo sem match)
+    { "$unwind": { "path": "$diretor_doc", "preserveNullAndEmptyArrays": True } },
+
+    # $set — classifica a nota e adiciona timestamp de geração
+    { "$set": {
+        "classificacao_nota": { "$switch": {
+            "branches": [
+                { "case": { "$gte": ["$nota", 9.0] }, "then": "Obra-prima" },
+                { "case": { "$gte": ["$nota", 7.5] }, "then": "Recomendado" },
+                { "case": { "$gte": ["$nota", 6.0] }, "then": "Regular" },
+            ],
+            "default": "Ruim"
+        }},
+        "gerado_em": datetime.now(timezone.utc),
+    }},
+
+    # $project — monta documento final com dados de avaliação + filme + diretor
+    { "$project": {
+        "_id": 1,
+        "usuario": "$nome_usuario", "nota": 1,
+        "classificacao_nota": 1, "titulo_resenha": 1,
+        "comentario": 1, "curtidas": 1, "gerado_em": 1,
+        "filme": {
+            "titulo": "$filme_doc.titulo", "ano": "$filme_doc.ano",
+            "generos": "$filme_doc.generos",
+        },
+        "diretor": {
+            "nome": "$diretor_doc.nome",
+            "nacionalidade": "$diretor_doc.nacionalidade",
+        }
+    }},
+
+    # $merge — persiste resultado em 'feed_snapshot' (upsert por _id)
+    { "$merge": {
+        "into": "feed_snapshot",
+        "on": "_id",
+        "whenMatched": "replace",
+        "whenNotMatched": "insert"
+    }},
+]""", language="python")
+
+        if st.button("▶ Executar Pipeline 2", key="run_p2", use_container_width=True):
+            with st.spinner("Executando e persistindo em feed_snapshot..."):
+                pipeline_2 = [
+                    {"$match": {"contem_spoiler": False, "nota": {"$gte": 5.0}}},
+                    {"$sort": {"created_at": -1}},
+                    {"$sample": {"size": 10}},
+                    {"$lookup": {"from": "filmes","localField": "filme_id","foreignField": "_id","as": "filme_doc"}},
+                    {"$unwind": {"path": "$filme_doc","preserveNullAndEmptyArrays": False}},
+                    {"$lookup": {"from": "pessoas","localField": "filme_doc.direcao.pessoa_id","foreignField": "_id","as": "diretor_doc"}},
+                    {"$unwind": {"path": "$diretor_doc","preserveNullAndEmptyArrays": True}},
+                    {"$set": {
+                        "classificacao_nota": {"$switch": {"branches": [
+                            {"case": {"$gte": ["$nota", 9.0]},"then": "Obra-prima"},
+                            {"case": {"$gte": ["$nota", 7.5]},"then": "Recomendado"},
+                            {"case": {"$gte": ["$nota", 6.0]},"then": "Regular"},
+                        ],"default": "Ruim"}},
+                        "gerado_em": datetime.now(timezone.utc),
+                    }},
+                    {"$project": {
+                        "_id": 1,"usuario": "$nome_usuario","nota": 1,
+                        "classificacao_nota": 1,"titulo_resenha": 1,"comentario": 1,"curtidas": 1,"gerado_em": 1,
+                        "filme": {"titulo": "$filme_doc.titulo","ano": "$filme_doc.ano","generos": "$filme_doc.generos"},
+                        "diretor": {"nome": "$diretor_doc.nome","nacionalidade": "$diretor_doc.nacionalidade"},
+                    }},
+                    {"$merge": {"into": "feed_snapshot","on": "_id","whenMatched": "replace","whenNotMatched": "insert"}},
+                ]
+                db["avaliacoes"].aggregate(pipeline_2)
+                feed = list(db["feed_snapshot"].find({}).sort("nota", -1))
+
+            total = db["feed_snapshot"].count_documents({})
+            st.success(f"✅ Pipeline executado · {len(feed)} item(s) no feed · {total} total em feed_snapshot")
+
+            emojis = {"Obra-prima": "🏆", "Recomendado": "⭐", "Regular": "👍", "Ruim": "👎"}
+            for item in feed:
+                classe = item.get("classificacao_nota", "—")
+                gerado = item.get("gerado_em")
+                gerado_str = gerado.strftime("%d/%m/%Y %H:%M") if hasattr(gerado, "strftime") else "—"
+                st.markdown(f"""
+                <div class="review-card">
+                  <div class="review-header">
+                    <div style="display:flex;align-items:center;gap:0.75rem">
+                      <div style="width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#2a1f00,#161618);border:1px solid rgba(255,255,255,0.08)"></div>
+                      <div>
+                        <div class="review-author">@{item['usuario']}</div>
+                        <div class="review-date">Gerado: {gerado_str}</div>
+                      </div>
+                    </div>
+                    <div style="text-align:right">
+                      <div class="review-nota">{item['nota']}</div>
+                      <div style="font-size:0.75rem;color:#c5a059">{emojis.get(classe,'')} {classe}</div>
+                    </div>
+                  </div>
+                  <div class="review-film">sobre <strong>{item['filme']['titulo']}</strong> ({item['filme']['ano']}) · Dir. <strong>{item['diretor'].get('nome','—')}</strong> ({item['diretor'].get('nacionalidade','—')})</div>
+                  <div class="review-headline">{item.get('titulo_resenha','')}</div>
+                  <p class="review-text">&ldquo;{item.get('comentario','')}&rdquo;</p>
+                  <div class="review-footer">👍 {item.get('curtidas',0)} curtidas · 🗄 Persistido em <code>feed_snapshot</code></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with st.expander("Ver JSON completo do feed_snapshot"):
+                st.code(dump_json(feed), language="json")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REDIS
+# ─────────────────────────────────────────────────────────────────────────────
+elif pagina == "Redis":
+    import redis as redis_lib
+    import hashlib, secrets, time
+
+    REDIS_HOST     = "seu-endpoint.db.redis.io"
+    REDIS_PORT     = 12345
+    REDIS_PASSWORD = "suasenhaaqui"
+
+    @st.cache_resource
+    def get_redis():
+        return redis_lib.Redis(
+            host=REDIS_HOST, port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            decode_responses=True, ssl=False,
+        )
+
+    def hash_senha(senha):
+        return hashlib.sha256(senha.encode()).hexdigest()
+
+    FILME_CIDADE = "64a1f2b3c4d5e6f7a8b9c001"
+    FILME_TROPA  = "64a1f2b3c4d5e6f7a8b9c002"
+
+    try:
+        rdb = get_redis()
+        rdb.ping()
+        redis_ok = True
+    except Exception as e:
+        redis_ok = False
+
+    st.markdown('<div class="page-wrap">', unsafe_allow_html=True)
+    st.markdown("""
+    <h1 style="font-family:'Playfair Display',serif;font-style:italic;font-weight:900;font-size:2.8rem;letter-spacing:-1.5px;margin-bottom:0.5rem">Redis Cloud</h1>
+    <p style="font-size:0.85rem;color:#a1a1aa;margin-bottom:2rem">Estruturas comuns e probabilísticas aplicadas ao CineHub</p>
+    """, unsafe_allow_html=True)
+
+    if not redis_ok:
+        st.error("❌ Erro ao conectar ao Redis Cloud. Verifique as credenciais.")
+        st.stop()
+
+    st.success("● Redis Cloud conectado")
+
+    tab1, tab2 = st.tabs(["🔐 Funcionalidade 1 — Login e Sessão", "🎲 Funcionalidade 2 — Estruturas Probabilísticas"])
+
+    # ══════════════════════════════════════════════════════
+    # FUNCIONALIDADE 1 — LOGIN E SESSÃO
+    # ══════════════════════════════════════════════════════
+    with tab1:
+        st.markdown("""
+        <div style="background:rgba(197,160,89,0.06);border:1px solid rgba(197,160,89,0.2);border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.5rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#c5a059;margin-bottom:0.5rem">Funcionalidade</div>
+          <p style="font-size:0.88rem;color:#a1a1aa;margin:0;line-height:1.7">Sistema de <strong style="color:#fff">autenticação e sessão</strong> usando Redis como camada rápida. Senha armazenada como hash SHA-256, sessão com expiração automática via TTL.</p>
+          <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.4rem">
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">HASH</span>
+            <span class="genre-tag">STRING + TTL</span>
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">SET</span>
+            <span class="genre-tag">HSET · SETEX · SADD · SREM</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="section-label">Cadastrar Usuário</div>', unsafe_allow_html=True)
+        with st.form("form_cadastro_redis", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                r_nome     = st.text_input("Nome")
+                r_email    = st.text_input("Email")
+            with c2:
+                r_usuario  = st.text_input("Nome de usuário", placeholder="cinefilo_br")
+                r_senha    = st.text_input("Senha", type="password")
+            if st.form_submit_button("Cadastrar no Redis", use_container_width=True):
+                if r_usuario and r_senha:
+                    chave = f"user:{r_usuario}"
+                    rdb.hset(chave, mapping={
+                        "nome": r_nome, "email": r_email,
+                        "senha_hash": hash_senha(r_senha),
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    })
+                    st.success(f"✅ Usuário `user:{r_usuario}` cadastrado como HASH no Redis")
+                    st.code(f"HSET user:{r_usuario} nome '{r_nome}' email '{r_email}' senha_hash '(sha256)' created_at '...'", language="bash")
+
+        st.markdown('<div class="section-label">Fazer Login</div>', unsafe_allow_html=True)
+        with st.form("form_login_redis"):
+            c1, c2 = st.columns(2)
+            with c1:
+                l_usuario = st.text_input("Nome de usuário", placeholder="cinefilo_br")
+            with c2:
+                l_senha   = st.text_input("Senha", type="password")
+            ttl = st.slider("Duração da sessão (segundos)", 60, 3600, 300, 60)
+            if st.form_submit_button("Entrar", use_container_width=True):
+                chave_user = f"user:{l_usuario}"
+                hash_salvo = rdb.hget(chave_user, "senha_hash")
+                if not hash_salvo:
+                    st.error("❌ Usuário não encontrado")
+                elif hash_salvo != hash_senha(l_senha):
+                    st.error("❌ Senha incorreta")
+                else:
+                    token = secrets.token_hex(16)
+                    chave_sessao = f"sessao:{token}"
+                    rdb.setex(chave_sessao, ttl, chave_user)
+                    rdb.sadd("sessoes:ativas", token)
+                    nome = rdb.hget(chave_user, "nome")
+                    st.success(f"✅ Login bem-sucedido! Bem-vindo, {nome}")
+                    st.code(f"SETEX sessao:{token} {ttl} user:{l_usuario}", language="bash")
+                    st.info(f"🔑 Token: `{token}` · Expira em {ttl}s · Adicionado ao SET `sessoes:ativas`")
+
+        st.markdown('<div class="section-label">Sessões Ativas</div>', unsafe_allow_html=True)
+        if st.button("🔄 Atualizar sessões", use_container_width=True):
+            tokens = rdb.smembers("sessoes:ativas")
+            st.caption(f"{len(tokens)} sessão(ões) ativa(s)")
+            for token in tokens:
+                chave = f"sessao:{token}"
+                user  = rdb.get(chave)
+                ttl_r = rdb.ttl(chave)
+                if user and ttl_r > 0:
+                    nome = rdb.hget(user, "nome") or user
+                    st.markdown(f"""
+                    <div class="person-card">
+                      <div class="person-name">{nome}</div>
+                      <div class="person-meta">{user} · Token: {token[:16]}...</div>
+                      <div class="person-bio">TTL restante: {ttl_r}s · Chave: sessao:{token[:16]}...</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    rdb.srem("sessoes:ativas", token)
+
+        st.markdown('<div class="section-label">Logout</div>', unsafe_allow_html=True)
+        with st.form("form_logout_redis"):
+            token_logout = st.text_input("Token de sessão para encerrar")
+            if st.form_submit_button("Fazer Logout", use_container_width=True):
+                chave = f"sessao:{token_logout}"
+                user  = rdb.get(chave)
+                if not user:
+                    st.warning("⚠️ Sessão não encontrada ou já expirada")
+                else:
+                    nome = rdb.hget(user, "nome") or user
+                    rdb.delete(chave)
+                    rdb.srem("sessoes:ativas", token_logout)
+                    st.success(f"✅ Logout realizado: {nome}")
+                    st.code(f"DEL sessao:{token_logout}\nSREM sessoes:ativas {token_logout}", language="bash")
+
+    # ══════════════════════════════════════════════════════
+    # FUNCIONALIDADE 2 — PROBABILÍSTICAS
+    # ══════════════════════════════════════════════════════
+    with tab2:
+        st.markdown("""
+        <div style="background:rgba(197,160,89,0.06);border:1px solid rgba(197,160,89,0.2);border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.5rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#c5a059;margin-bottom:0.5rem">Funcionalidade</div>
+          <p style="font-size:0.88rem;color:#a1a1aa;margin:0;line-height:1.7">Estruturas probabilísticas para <strong style="color:#fff">detecção de avaliação duplicada</strong> (Bloom Filter) e <strong style="color:#fff">contagem de visitantes únicos</strong> (HyperLogLog) — sem armazenar dados individuais.</p>
+          <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.4rem">
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">Bloom Filter</span>
+            <span class="genre-tag" style="color:#c5a059;border-color:rgba(197,160,89,0.4)">HyperLogLog</span>
+            <span class="genre-tag">BF.ADD · BF.EXISTS</span>
+            <span class="genre-tag">PFADD · PFCOUNT · PFMERGE</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── BLOOM FILTER ──
+        st.markdown('<div class="section-label">Bloom Filter — Detecção de Avaliação Duplicada</div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="review-card" style="margin-bottom:1rem">
+          <div class="review-headline">Como funciona</div>
+          <p class="review-text">Antes de abrir o formulário de avaliação, verificamos no Bloom Filter se aquele usuário já avaliou o filme. Se a resposta for <strong style="color:#c5a059">PROVAVELMENTE SIM</strong> → bloqueia. Se for <strong style="color:#4ade80">CERTAMENTE NÃO</strong> → permite. Evita uma consulta ao MongoDB na maioria dos casos.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Registrar avaliação no Bloom Filter**")
+            with st.form("form_bf_add"):
+                bf_usuario = st.text_input("Usuário", placeholder="user:cinefilo_br")
+                bf_filme   = st.selectbox("Filme", [
+                    ("Cidade de Deus", FILME_CIDADE),
+                    ("Tropa de Elite", FILME_TROPA),
+                ], format_func=lambda x: x[0])
+                if st.form_submit_button("Registrar (BF.ADD)", use_container_width=True):
+                    entrada = f"{bf_usuario}:{bf_filme[1]}"
+                    rdb.execute_command("BF.ADD", "bloom:avaliacoes", entrada)
+                    st.success(f"✅ Registrado: `{entrada}`")
+                    st.code(f"BF.ADD bloom:avaliacoes {entrada}", language="bash")
+
+        with c2:
+            st.markdown("**Verificar se já avaliou**")
+            with st.form("form_bf_check"):
+                chk_usuario = st.text_input("Usuário", placeholder="user:cinefilo_br")
+                chk_filme   = st.selectbox("Filme", [
+                    ("Cidade de Deus", FILME_CIDADE),
+                    ("Tropa de Elite", FILME_TROPA),
+                ], format_func=lambda x: x[0])
+                if st.form_submit_button("Verificar (BF.EXISTS)", use_container_width=True):
+                    entrada   = f"{chk_usuario}:{chk_filme[1]}"
+                    resultado = rdb.execute_command("BF.EXISTS", "bloom:avaliacoes", entrada)
+                    st.code(f"BF.EXISTS bloom:avaliacoes {entrada}\n→ {resultado}", language="bash")
+                    if resultado:
+                        st.warning(f"⚠️ PROVAVELMENTE já avaliou — avaliação bloqueada")
+                    else:
+                        st.success(f"✅ CERTAMENTE não avaliou — avaliação permitida")
+
+        # ── HYPERLOGLOG ──
+        st.markdown('<div class="section-label">HyperLogLog — Visitantes Únicos por Filme</div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="review-card" style="margin-bottom:1rem">
+          <div class="review-headline">Como funciona</div>
+          <p class="review-text">Cada acesso à página de um filme registra o usuário no HyperLogLog daquele filme. O HLL estima quantos usuários <strong style="color:#fff">únicos</strong> visitaram — usando apenas ~12KB de memória, independente do volume, com margem de erro de ~0.81%.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.form("form_hll_add"):
+                hll_usuario = st.text_input("ID do visitante", placeholder="user:cinefilo_br")
+                hll_filme   = st.selectbox("Filme visitado", [
+                    ("Cidade de Deus", FILME_CIDADE),
+                    ("Tropa de Elite", FILME_TROPA),
+                ], format_func=lambda x: x[0])
+                if st.form_submit_button("Registrar visita (PFADD)", use_container_width=True):
+                    chave = f"hll:visitas:{hll_filme[1]}"
+                    rdb.pfadd(chave, hll_usuario)
+                    st.success(f"✅ Visita registrada")
+                    st.code(f"PFADD {chave} {hll_usuario}", language="bash")
+
+        with c2:
+            if st.button("📊 Ver contagem de visitantes (PFCOUNT)", use_container_width=True):
+                u_cidade = rdb.pfcount(f"hll:visitas:{FILME_CIDADE}")
+                u_tropa  = rdb.pfcount(f"hll:visitas:{FILME_TROPA}")
+                rdb.pfmerge("hll:visitas:todos", f"hll:visitas:{FILME_CIDADE}", f"hll:visitas:{FILME_TROPA}")
+                u_total  = rdb.pfcount("hll:visitas:todos")
+                st.markdown(f"""
+                <div class="stat-grid">
+                  <div class="stat-card"><div class="stat-val">{u_cidade}</div><div class="stat-lbl">Cidade de Deus</div></div>
+                  <div class="stat-card"><div class="stat-val">{u_tropa}</div><div class="stat-lbl">Tropa de Elite</div></div>
+                  <div class="stat-card"><div class="stat-val">{u_total}</div><div class="stat-lbl">Total (PFMERGE)</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.code(f"PFCOUNT hll:visitas:{FILME_CIDADE}  → {u_cidade}\nPFCOUNT hll:visitas:{FILME_TROPA}   → {u_tropa}\nPFMERGE hll:visitas:todos ...\nPFCOUNT hll:visitas:todos           → {u_total}", language="bash")
+
+        # ── Chaves no Redis ──
+        st.markdown('<div class="section-label">Chaves no Redis Cloud</div>', unsafe_allow_html=True)
+        if st.button("🔄 Ver todas as chaves", use_container_width=True):
+            chaves = rdb.keys("*")
+            st.caption(f"{len(chaves)} chave(s) no banco")
+            for chave in sorted(chaves):
+                tipo  = rdb.type(chave)
+                ttl_v = rdb.ttl(chave)
+                ttl_s = f" · TTL: {ttl_v}s" if ttl_v > 0 else ""
+                st.markdown(f'<div class="index-row"><strong>{chave}</strong> · tipo: <span style="color:#c5a059">{tipo}</span>{ttl_s}</div>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEO4J
+# ─────────────────────────────────────────────────────────────────────────────
+elif pagina == "Neo4j":
+    from neo4j import GraphDatabase
+
+    NEO4J_URI      = "bolt+ssc://xxxxxxxx.production-orch-0000.neo4j.io"
+    NEO4J_USER     = "usuario_neo4j"
+    NEO4J_PASSWORD = "suasenha"
+    NEO4J_DATABASE = "neo4j"
+
+    FILMES_N = [
+        {"id":"filme_001","titulo":"Cidade de Deus","ano":2002,"duracao":130,"nota_media":8.6,"generos":["Crime","Drama"]},
+        {"id":"filme_002","titulo":"Tropa de Elite","ano":2007,"duracao":115,"nota_media":8.0,"generos":["Ação","Crime","Drama"]},
+    ]
+    PESSOAS_N = [
+        {"id":"pessoa_001","nome":"Fernando Meirelles","funcao":"diretor"},
+        {"id":"pessoa_002","nome":"José Padilha",      "funcao":"diretor"},
+        {"id":"pessoa_003","nome":"Alexandre Rodrigues","funcao":"ator"},
+        {"id":"pessoa_004","nome":"Leandro Firmino",   "funcao":"ator"},
+        {"id":"pessoa_005","nome":"Wagner Moura",      "funcao":"ator"},
+    ]
+    USUARIOS_N  = [{"id":"user_001","nome":"cinefilo_br"},{"id":"user_002","nome":"ana_filmes"},{"id":"user_003","nome":"pedro_vaz"}]
+    DIRECOES_N  = [("pessoa_001","filme_001"),("pessoa_002","filme_002")]
+    ATUACOES_N  = [("pessoa_003","filme_001","Buscapé"),("pessoa_004","filme_001","Zé Pequeno"),("pessoa_005","filme_002","Capitão Nascimento")]
+    AVALIACOES_N= [("user_001","filme_001",9.5),("user_002","filme_001",8.0),("user_001","filme_002",8.5),("user_003","filme_002",7.5)]
+    PERTENC_N   = [("filme_001","Crime"),("filme_001","Drama"),("filme_002","Ação"),("filme_002","Crime"),("filme_002","Drama")]
+
+    @st.cache_resource
+    def get_neo4j():
+        return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+
+    def nrun(query, params=None):
+        with get_neo4j().session(database=NEO4J_DATABASE) as s:
+            return list(s.run(query, params or {}))
+
+    try:
+        nrun("RETURN 1")
+        neo4j_ok = True
+    except Exception as e:
+        neo4j_ok = False
+
+    st.markdown('<div class="page-wrap">', unsafe_allow_html=True)
+    st.markdown("""
+    <h1 style="font-family:'Playfair Display',serif;font-style:italic;font-weight:900;font-size:2.8rem;letter-spacing:-1.5px;margin-bottom:0.5rem">Neo4j · Grafo CineHub</h1>
+    <p style="font-size:0.85rem;color:#a1a1aa;margin-bottom:2rem">Grafo de filmes, pessoas e usuários + GDS PageRank</p>
+    """, unsafe_allow_html=True)
+
+    if not neo4j_ok:
+        st.error("❌ Erro ao conectar ao Neo4j Aura.")
+        st.stop()
+
+    st.success("● Neo4j Aura conectado")
+
+    tab_grafo, tab_cypher, tab_pagerank = st.tabs(["🕸️ Criar Grafo", "🔍 Consultas Cypher", "📊 GDS PageRank"])
+
+    # ══════════════════════════════════════════════════════
+    # CRIAR GRAFO
+    # ══════════════════════════════════════════════════════
+    with tab_grafo:
+        st.markdown("""
+        <div style="background:rgba(197,160,89,0.06);border:1px solid rgba(197,160,89,0.2);border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.5rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#c5a059;margin-bottom:0.5rem">Estrutura do Grafo</div>
+          <p style="font-size:0.88rem;color:#a1a1aa;margin:0;line-height:1.7">
+            <strong style="color:#fff">Nós:</strong> Filme · Pessoa · Usuario · Genero<br>
+            <strong style="color:#fff">Relacionamentos:</strong> DIRIGIU · ATUOU_EM · AVALIOU · PERTENCE_A
+          </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🕸️ Criar / Recriar Grafo no Neo4j", use_container_width=True):
+            with st.spinner("Criando grafo..."):
+                log = []
+                nrun("MATCH (n) DETACH DELETE n")
+                log.append("🗑️ Grafo anterior limpo")
+
+                for f in FILMES_N:
+                    nrun("CREATE (:Filme {id:$id,titulo:$titulo,ano:$ano,duracao:$duracao,nota_media:$nota_media})", f)
+                for p in PESSOAS_N:
+                    nrun("CREATE (:Pessoa {id:$id,nome:$nome,funcao:$funcao})", p)
+                for u in USUARIOS_N:
+                    nrun("CREATE (:Usuario {id:$id,nome:$nome})", u)
+                generos = list(set(g for f in FILMES_N for g in f["generos"]))
+                for g in generos:
+                    nrun("MERGE (:Genero {nome:$nome})", {"nome": g})
+                log.append(f"✅ {len(FILMES_N)} nós Filme · {len(PESSOAS_N)} nós Pessoa · {len(USUARIOS_N)} nós Usuario · {len(generos)} nós Genero")
+
+                for pid, fid in DIRECOES_N:
+                    nrun("MATCH (p:Pessoa{id:$pid}),(f:Filme{id:$fid}) CREATE (p)-[:DIRIGIU]->(f)", {"pid":pid,"fid":fid})
+                for pid, fid, per in ATUACOES_N:
+                    nrun("MATCH (p:Pessoa{id:$pid}),(f:Filme{id:$fid}) CREATE (p)-[:ATUOU_EM{personagem:$per}]->(f)", {"pid":pid,"fid":fid,"per":per})
+                for uid, fid, nota in AVALIACOES_N:
+                    nrun("MATCH (u:Usuario{id:$uid}),(f:Filme{id:$fid}) CREATE (u)-[:AVALIOU{nota:$nota}]->(f)", {"uid":uid,"fid":fid,"nota":nota})
+                for fid, gen in PERTENC_N:
+                    nrun("MATCH (f:Filme{id:$fid}),(g:Genero{nome:$gen}) CREATE (f)-[:PERTENCE_A]->(g)", {"fid":fid,"gen":gen})
+                log.append(f"✅ {len(DIRECOES_N)} DIRIGIU · {len(ATUACOES_N)} ATUOU_EM · {len(AVALIACOES_N)} AVALIOU · {len(PERTENC_N)} PERTENCE_A")
+
+            st.success("✅ Grafo criado com sucesso!")
+            for l in log:
+                st.markdown(f'<div class="index-row">{l}</div>', unsafe_allow_html=True)
+
+            nos  = nrun("MATCH (n) RETURN labels(n)[0] AS tipo, count(*) AS total ORDER BY tipo")
+            rels = nrun("MATCH ()-[r]->() RETURN type(r) AS tipo, count(*) AS total ORDER BY tipo")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown('<div class="section-label">Nós criados</div>', unsafe_allow_html=True)
+                for r in nos:
+                    st.markdown(f'<div class="index-row"><strong>{r["tipo"]}</strong> · {r["total"]} nó(s)</div>', unsafe_allow_html=True)
+            with c2:
+                st.markdown('<div class="section-label">Relacionamentos criados</div>', unsafe_allow_html=True)
+                for r in rels:
+                    st.markdown(f'<div class="index-row"><strong>{r["tipo"]}</strong> · {r["total"]} rel(s)</div>', unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════
+    # CONSULTAS CYPHER
+    # ══════════════════════════════════════════════════════
+    with tab_cypher:
+        st.markdown('<div class="section-label">Consultas Cypher</div>', unsafe_allow_html=True)
+
+        consultas = {
+            "Filmes e seus diretores": """
+MATCH (p:Pessoa)-[:DIRIGIU]->(f:Filme)
+RETURN f.titulo AS filme, p.nome AS diretor, f.ano AS ano
+ORDER BY f.ano""",
+            "Elenco completo": """
+MATCH (p:Pessoa)-[a:ATUOU_EM]->(f:Filme)
+RETURN f.titulo AS filme, p.nome AS ator, a.personagem AS personagem
+ORDER BY f.titulo""",
+            "Avaliações por usuário": """
+MATCH (u:Usuario)-[a:AVALIOU]->(f:Filme)
+RETURN u.nome AS usuario, f.titulo AS filme, a.nota AS nota
+ORDER BY a.nota DESC""",
+            "Filmes por gênero": """
+MATCH (f:Filme)-[:PERTENCE_A]->(g:Genero)
+RETURN g.nome AS genero, collect(f.titulo) AS filmes
+ORDER BY genero""",
+            "Usuários que avaliaram o mesmo filme": """
+MATCH (u1:Usuario)-[:AVALIOU]->(f:Filme)<-[:AVALIOU]-(u2:Usuario)
+WHERE u1.nome < u2.nome
+RETURN u1.nome AS usuario1, u2.nome AS usuario2, f.titulo AS filme_em_comum""",
+        }
+
+        consulta_sel = st.selectbox("Escolha uma consulta", list(consultas.keys()))
+        st.code(consultas[consulta_sel].strip(), language="cypher")
+
+        if st.button("▶ Executar consulta", use_container_width=True):
+            try:
+                rows = nrun(consultas[consulta_sel])
+                if rows:
+                    import pandas as pd
+                    st.dataframe(pd.DataFrame([dict(r) for r in rows]), use_container_width=True, hide_index=True)
+                else:
+                    st.warning("Nenhum resultado — crie o grafo primeiro na aba 'Criar Grafo'")
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
+    # ══════════════════════════════════════════════════════
+    # GDS PAGERANK
+    # ══════════════════════════════════════════════════════
+    with tab_pagerank:
+        st.markdown("""
+        <div style="background:rgba(197,160,89,0.06);border:1px solid rgba(197,160,89,0.2);border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.5rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#c5a059;margin-bottom:0.5rem">GDS PageRank — Filmes mais influentes</div>
+          <p style="font-size:0.88rem;color:#a1a1aa;margin:0;line-height:1.7">
+            Filmes avaliados por usuários que também avaliaram muitos outros filmes recebem score mais alto. Um filme com poucos votos mas de usuários muito conectados pode superar um filme com muitos votos de usuários isolados.
+          </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("▶ Executar PageRank", use_container_width=True):
+            try:
+                # Tenta GDS nativo
+                nrun("RETURN gds.version() AS v")
+                try:
+                    nrun("CALL gds.graph.drop('cinehub-grafo', false)")
+                except: pass
+                nrun("""
+                    CALL gds.graph.project('cinehub-grafo',
+                        ['Filme','Usuario'],
+                        {AVALIOU:{orientation:'UNDIRECTED'}})
+                """)
+                rows = nrun("""
+                    CALL gds.pageRank.stream('cinehub-grafo',
+                        {maxIterations:20, dampingFactor:0.85})
+                    YIELD nodeId, score
+                    WITH gds.util.asNode(nodeId) AS node, score
+                    WHERE 'Filme' IN labels(node)
+                    RETURN node.titulo AS filme, score
+                    ORDER BY score DESC
+                """)
+                nrun("CALL gds.graph.drop('cinehub-grafo')")
+                modo = "GDS PageRank nativo"
+            except:
+                # Fallback: PageRank manual via Cypher
+                rows = nrun("""
+                    MATCH (u:Usuario)-[:AVALIOU]->(f:Filme)
+                    WITH f, count(u) AS avaliadores,
+                         sum(size([(u2)-[:AVALIOU]->() | u2])) AS conexoes
+                    RETURN f.titulo AS filme,
+                           avaliadores AS avaliadores,
+                           conexoes AS score,
+                           f.nota_media AS nota_media
+                    ORDER BY score DESC, nota_media DESC
+                """)
+                modo = "PageRank manual (Cypher)"
+
+            st.info(f"Método usado: **{modo}**")
+            if rows:
+                for i, r in enumerate(rows, 1):
+                    score = r.get("score", 0)
+                    filme = r.get("filme", "")
+                    st.markdown(f"""
+                    <div class="rank-row">
+                      <div class="rank-num {"top" if i==1 else ""}">#{i}</div>
+                      <div class="rank-info">
+                        <div class="rank-title">{filme}</div>
+                        <div class="rank-meta">PageRank Score: <strong style="color:#c5a059">{score:.4f if isinstance(score, float) else score}</strong></div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.warning("Nenhum resultado — crie o grafo primeiro na aba 'Criar Grafo'")
+
+            with st.expander("Ver query Cypher usada"):
+                st.code("""
+-- GDS PageRank
+CALL gds.graph.project('cinehub-grafo', ['Filme','Usuario'],
+    {AVALIOU:{orientation:'UNDIRECTED'}})
+
+CALL gds.pageRank.stream('cinehub-grafo',
+    {maxIterations:20, dampingFactor:0.85})
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS node, score
+WHERE 'Filme' IN labels(node)
+RETURN node.titulo AS filme, score
+ORDER BY score DESC
+                """, language="cypher")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
